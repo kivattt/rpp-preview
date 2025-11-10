@@ -5,14 +5,6 @@ import "core:os"
 import "core:strings"
 import "core:strconv"
 
-trim_left :: proc(s: string) -> string {
-	for i := 0; i < len(s); i += 1 {
-		if s[i] != ' ' do return s[i:]
-	}
-
-	return ""
-}
-
 Track :: struct {
 	mute: bool,
 	volume: f32,
@@ -23,11 +15,32 @@ Track :: struct {
 Item :: struct {
 	// type: ... (union?)
 	mute: bool,
-	filename: string,
 	position_sec: f32,
 	length_sec: f32,
 	volume: f32,
 	pan: f32,
+	source: Source,
+}
+
+SourceType :: enum {
+	UNKNOWN = -1,
+	MIDI,
+	WAVE,
+	MP3,
+	SECTION,
+}
+
+Source :: struct {
+	type: SourceType,
+	filename: string, // Not used when type is MIDI or SECTION
+}
+
+trim_left :: proc(s: string) -> string {
+	for i := 0; i < len(s); i += 1 {
+		if s[i] != ' ' do return s[i:]
+	}
+
+	return ""
 }
 
 // This function is only safe to use for lines without quoted strings in them
@@ -46,28 +59,72 @@ get_field_f32 :: proc(s: string, fieldIndex: int, default: f32 = 1.0) -> f32 {
 	return ok ? num : default
 }
 
+source_type :: proc(s: string) -> SourceType {
+	if s == "WAVE" {
+		return .WAVE
+	} else if s == "MIDI" {
+		return .MIDI
+	} else if s == "MP3" {
+		return .MP3
+	} else if s == "SECTION" {
+		return .SECTION
+	}
+
+	return .UNKNOWN
+}
+
 // Remember to delete() the returned list!
 // Also remember to delete() all the tracks .items lists
 parse_rpp :: proc(fileData: []u8) -> [dynamic]Track {
 	tracks := [dynamic]Track{}
 
+	inSource := false
 	inItem := false
 	inTrack := false
 
+	sourceCount := 0
+
+	currentSource := Source{}
 	currentItem := Item{}
 	currentTrack := Track{}
 
 	lineNumber := 0
 	it := string(fileData)
 	for line in strings.split_lines_iterator(&it) {
+		//fmt.println(line)
+
 		lineNumber += 1
 		trim := trim_left(line)
 
-		if inItem {
+		if inSource {
+			if line == "      >" { // End of source scope (3 indentations)
+				currentItem.source = currentSource
+				currentSource = Source{}
+				inSource = false
+				continue
+			}
+
+			if strings.starts_with(trim, "FILE") {
+				currentSource.filename = get_field(trim[5:], 0) // FIXME: Parse string
+			}
+		} else if inItem {
 			if line == "    >" { // End of item scope (2 indentations)
 				append(&currentTrack.items, currentItem)
 				currentItem = Item{}
 				inItem = false
+				sourceCount = 0
+				continue
+			}
+
+			if strings.starts_with(trim, "<SOURCE") {
+				currentSource.type = source_type(trim[8:])
+
+				inSource = true
+				sourceCount += 1
+				if sourceCount > 1 {
+					fmt.println("Multiple sources found in item on line", lineNumber)
+					panic("")
+				}
 				continue
 			}
 
@@ -75,12 +132,12 @@ parse_rpp :: proc(fileData: []u8) -> [dynamic]Track {
 				currentItem.position_sec = get_field_f32(trim[9:], 0)
 			} else if strings.starts_with(trim, "LENGTH") {
 				currentItem.length_sec = get_field_f32(trim[6:], 0)
-			} else if strings.starts_with(trim, "FILENAME") {
-				currentItem.filename = get_field(trim[9:], 0)
+			} else if strings.starts_with(trim, "MUTE") {
+				currentItem.mute = get_field(trim[5:], 0) == "1"
 			}
 		} else {
 			if inTrack {
-				if trim == ">" {
+				if line == "  >" { // End of track scope (1 indentation)
 					append(&tracks, currentTrack)
 					currentTrack = Track{}
 					inTrack = false
