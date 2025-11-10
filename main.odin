@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:strconv"
 
 trim_left :: proc(s: string) -> string {
 	for i := 0; i < len(s); i += 1 {
@@ -16,7 +17,7 @@ Track :: struct {
 	mute: bool,
 	volume: f32,
 	pan: f32,
-	items: []Item,
+	items: [dynamic]Item,
 }
 
 Item :: struct {
@@ -31,44 +32,76 @@ Item :: struct {
 
 // This function is only safe to use for lines without quoted strings in them
 // TODO: Parse quoted strings, so field index won't mess up...
-parse_field :: proc(s: string, fieldIndex: int) -> string {
-	currentFieldIndex := 0
-
-	for i := 0; i < len(s); i += 1 {
-		if s[i] == ' ' {
-			currentFieldIndex += 1
-		}
+get_field :: proc(s: string, fieldIndex: int) -> string {
+	split, err := strings.split(s, " ")
+	if err != nil {
+		return ""
 	}
+
+	return split[fieldIndex]
+}
+
+get_field_f32 :: proc(s: string, fieldIndex: int, default: f32 = 1.0) -> f32 {
+	num, ok := strconv.parse_f32(get_field(s, fieldIndex))
+	return ok ? num : default
 }
 
 // Remember to delete() the returned list!
+// Also remember to delete() all the tracks .items lists
 parse_rpp :: proc(fileData: []u8) -> [dynamic]Track {
+	tracks := [dynamic]Track{}
+
+	inItem := false
 	inTrack := false
 
-	tracks := [dynamic]Track{}
+	currentItem := Item{}
 	currentTrack := Track{}
 
+	lineNumber := 0
 	it := string(fileData)
 	for line in strings.split_lines_iterator(&it) {
+		lineNumber += 1
 		trim := trim_left(line)
 
-		if inTrack {
-			if trim == ">" {
-				append(&tracks, currentTrack)
-				currentTrack = Track{}
-				inTrack = false
+		if inItem {
+			if line == "    >" { // End of item scope (2 indentations)
+				append(&currentTrack.items, currentItem)
+				currentItem = Item{}
+				inItem = false
 				continue
 			}
 
-			if strings.starts_with(trim, "MUTESOLO") {
-				currentTrack.mute = trim[9:10] == "1"
-			} else if strings.starts_with(trim, "VOLPAN") {
-				currentTrack.volume = read_field(trim[7:], 0)
-				currentTrack.volume = trim[7:]
+			if strings.starts_with(trim, "POSITION") {
+				currentItem.position_sec = get_field_f32(trim[9:], 0)
+			} else if strings.starts_with(trim, "LENGTH") {
+				currentItem.length_sec = get_field_f32(trim[6:], 0)
+			} else if strings.starts_with(trim, "FILENAME") {
+				currentItem.filename = get_field(trim[9:], 0)
 			}
 		} else {
-			if strings.starts_with(trim, "<TRACK") {
-				inTrack = true
+			if inTrack {
+				if trim == ">" {
+					append(&tracks, currentTrack)
+					currentTrack = Track{}
+					inTrack = false
+					continue
+				}
+
+				if trim == "<ITEM" {
+					inItem = true
+					continue
+				}
+
+				if strings.starts_with(trim, "MUTESOLO") {
+					currentTrack.mute = trim[9:10] == "1"
+				} else if strings.starts_with(trim, "VOLPAN") {
+					currentTrack.volume = get_field_f32(trim[7:], 0)
+					currentTrack.pan    = get_field_f32(trim[7:], 1)
+				}
+			} else {
+				if strings.starts_with(trim, "<TRACK") {
+					inTrack = true
+				}
 			}
 		}
 	}
@@ -93,7 +126,13 @@ main :: proc() {
 	defer delete(data)
 
 	tracks := parse_rpp(data)
+	defer {
+		for &track in tracks {
+			delete(track.items)
+		}
+	}
 	defer delete(tracks)
+
 	i := 0
 	for track in tracks {
 		i += 1
