@@ -12,16 +12,6 @@ trim_left :: proc(s: string) -> string {
 	return ""
 }
 
-starts_with :: proc(s: string, c: byte) -> bool {
-	for i := 0; i < len(s); i += 1 {
-		if s[i] != ' ' {
-			return s[i] == c
-		}
-	}
-
-	return false
-}
-
 Track :: struct {
 	mute: bool,
 	volume: f32,
